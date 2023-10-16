@@ -110,13 +110,23 @@ class Compiler(_Compiler):
         self.buf.append('{% endfor %}')
 
     def visitInclude(self, node):
-        path = os.path.join(
-            self.options.get("basedir", '.'), self.format_path(node.path)
-        )
-        if os.path.exists(path):
-            src = open(path, 'r').read()
+        # decide the file's searchdir
+        if node.path.startswith("/"):
+            searchdir = self.options.get("searchdirs", {}).get("basedir", ".")
+            # Remove the / so self.format_path doesn't prepend "C:\" on Windows
+            node.path = node.path[1:]
         else:
-            raise Exception("Include path doesn't exists ({})".format(path))
+            # in every other case, it's a relative include, use either filedir,
+            # or "." as a last resort
+            searchdir = self.options.get("searchdirs", {}).get("filedir", ".")
+
+        path = os.path.join(
+            searchdir, self.format_path(node.path))
+        try:
+            with open(path, 'r', encoding="utf-8") as f:
+                src = f.read()
+        except OSError as ose:
+            raise Exception("Include path doesn't exists ({})".format(path)) from ose
 
         parser = pypugjs.parser.Parser(src)
         block = parser.parse()
@@ -154,8 +164,26 @@ class PyPugJSExtension(Extension):
             loader = loader.app.jinja_loader
         except AttributeError:
             pass
-        if hasattr(loader, 'searchpath') and len(loader.searchpath):
-            self.options["basedir"] = loader.searchpath[0]
+
+        self.options["searchdirs"] = {}
+        try:
+            # we're in a Flask app
+            # extract the filename's directory path
+            # and include it in the searchdirs.
+            # In the case of Blueprints, this will pull
+            # the Blueprint's basedir path
+            # in the searchdirs.
+            filedir = os.path.dirname(filename)
+            self.options["searchdirs"]["filedir"] = filedir
+        except (TypeError, IndexError):
+            pass
+
+        try:
+            # we're in a Flask app
+            # get the app's root template dir
+            self.options["searchdirs"]["basedir"] = loader.searchpath[0]
+        except (AttributeError, IndexError):
+            pass
 
         if not name or (name and not os.path.splitext(name)[1] in self.file_extensions):
             return source
